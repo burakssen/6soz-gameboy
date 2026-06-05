@@ -1,0 +1,13 @@
+.{
+    .name = ._6soz_gameboy,
+    .version = "0.0.1",
+    .dependencies = .{
+        .lr35902 = .{
+            .url = "../6soz-lr35902",
+            .hash = "_6soz_lr35902-0.0.1--fXWqulqAADCkodY6dIewOyq5-ZiGFGV8QDbAcueAmFu",
+        },
+    },
+    .minimum_zig_version = "0.16.0",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "scripts", "README.md", "LICENCE" },
+    .fingerprint = 0x14314feb9a3c2d4c,
+}
