@@ -1,4 +1,5 @@
 const std = @import("std");
+const State = @import("state_io.zig");
 
 const Cartridge = @This();
 
@@ -130,6 +131,57 @@ pub fn loadSaveData(self: *Cartridge, data: []const u8) !void {
     @memcpy(&self.rtc, data[save_magic.len..][0..5]);
     self.rtc_cycles = std.mem.readInt(u64, data[save_magic.len + 5 ..][0..8], .little);
     @memcpy(self.ram, data[save_header_size..]);
+}
+
+pub fn romHash(self: *const Cartridge) u64 {
+    return State.hashBytes(0x6762526f6d486173, self.rom);
+}
+
+pub fn saveState(self: *const Cartridge, writer: *std.Io.Writer) !void {
+    try State.writeValue(writer, self.romHash());
+    try State.writeValue(writer, self.mapper);
+    try State.writeValue(writer, self.model_support);
+    try State.writeValue(writer, self.has_battery);
+    try State.writeValue(writer, self.has_rtc);
+    try State.writeValue(writer, self.has_rumble);
+    try State.writeValue(writer, self.ram_enabled);
+    try State.writeValue(writer, self.rom_bank);
+    try State.writeValue(writer, self.ram_bank);
+    try State.writeValue(writer, self.bank_mode);
+    try State.writeValue(writer, self.mbc1_high);
+    try State.writeValue(writer, self.mbc3_select);
+    try State.writeValue(writer, self.latch_last);
+    try State.writeValue(writer, self.rtc);
+    try State.writeValue(writer, self.rtc_latched);
+    try State.writeValue(writer, self.rtc_cycles);
+    try State.writeValue(writer, self.rumble_on);
+    try State.writeValue(writer, @as(u32, @intCast(self.ram.len)));
+    try writer.writeAll(self.ram);
+}
+
+pub fn loadState(self: *Cartridge, reader: *std.Io.Reader) !void {
+    if ((try State.readValue(reader, u64)) != self.romHash()) return State.Error.StateKindMismatch;
+    if ((try State.readValue(reader, Mapper)) != self.mapper) return State.Error.StateKindMismatch;
+    if ((try State.readValue(reader, ModelSupport)) != self.model_support) return State.Error.StateKindMismatch;
+    if ((try State.readValue(reader, bool)) != self.has_battery) return State.Error.StateKindMismatch;
+    if ((try State.readValue(reader, bool)) != self.has_rtc) return State.Error.StateKindMismatch;
+    if ((try State.readValue(reader, bool)) != self.has_rumble) return State.Error.StateKindMismatch;
+
+    self.ram_enabled = try State.readValue(reader, bool);
+    self.rom_bank = try State.readValue(reader, u16);
+    self.ram_bank = try State.readValue(reader, u8);
+    self.bank_mode = try State.readValue(reader, u1);
+    self.mbc1_high = try State.readValue(reader, u2);
+    self.mbc3_select = try State.readValue(reader, u8);
+    self.latch_last = try State.readValue(reader, u1);
+    self.rtc = try State.readValue(reader, [5]u8);
+    self.rtc_latched = try State.readValue(reader, [5]u8);
+    self.rtc_cycles = try State.readValue(reader, u64);
+    self.rumble_on = try State.readValue(reader, bool);
+
+    const ram_len = try State.readValue(reader, u32);
+    if (ram_len != self.ram.len) return State.Error.InvalidState;
+    @memcpy(self.ram, try State.readBytes(reader, self.ram.len));
 }
 
 fn readExternal(self: *Cartridge, address: u16) u8 {

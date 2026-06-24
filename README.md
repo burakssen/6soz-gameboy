@@ -4,7 +4,7 @@ A decoupled Game Boy (DMG) and Game Boy Color (CGB) emulator core written in Zig
 
 ## Features
 
-The repository provides [LR35902](https://github.com/burakssen/6soz-lr35902) integration, DMG/CGB memory maps, boot ROM execution, timers, interrupts, serial loopback, joypad input, DMA, CGB banking, video (PPU), audio (APU), battery/RTC persistence, and cartridge controllers.
+The repository provides [LR35902](https://github.com/burakssen/6soz-lr35902) integration, DMG/CGB memory maps, boot ROM execution, timers, interrupts, serial loopback, joypad input, DMA, CGB banking, video (PPU), audio (APU), battery/RTC persistence, save states, and cartridge controllers.
 
 Supported controller families are ROM-only, MBC1, MBC2, MBC3, and MBC5. Other controller types are rejected rather than approximated with incompatible banking behavior.
 
@@ -30,6 +30,7 @@ while (true) {
 ```
 
 The emulator requires a legally obtained DMG or CGB boot ROM for proper initialization.
+Hosts can persist battery/RTC data with `GameBoy.saveRam()` and `GameBoy.loadSaveRam()`. Runtime state can be snapshotted with `GameBoy.saveState()` and restored with `GameBoy.loadState()` against the same loaded ROM and matching boot ROM.
 
 ## Build
 
@@ -49,4 +50,3 @@ Run a Mooneye-compatible ROM headlessly with:
 ```sh
 zig build test-rom -- path/to/test.gb path/to/boot.bin
 ```
-

@@ -132,11 +132,11 @@ pub fn readRegister(self: *const Ppu, address: u16) u8 {
         0xff49 => self.obp1,
         0xff4a => self.wy,
         0xff4b => self.wx,
-        0xff4f => 0xfe | self.vbk,
-        0xff68 => self.bgpi,
-        0xff69 => self.bg_palette[self.bgpi & 0x3f],
-        0xff6a => self.obpi,
-        0xff6b => self.obj_palette[self.obpi & 0x3f],
+        0xff4f => if (self.model == .cgb) 0xfe | self.vbk else 0xff,
+        0xff68 => if (self.model == .cgb) 0x40 | self.bgpi else 0xff,
+        0xff69 => if (self.model == .cgb) (if (self.cpuCanAccessVram()) self.bg_palette[self.bgpi & 0x3f] else 0xff) else 0xff,
+        0xff6a => if (self.model == .cgb) 0x40 | self.obpi else 0xff,
+        0xff6b => if (self.model == .cgb) (if (self.cpuCanAccessVram()) self.obj_palette[self.obpi & 0x3f] else 0xff) else 0xff,
         else => 0xff,
     };
 }
@@ -174,7 +174,7 @@ pub fn writeRegister(self: *Ppu, address: u16, value: u8, interrupt_flags: *u8) 
             if (self.model == .cgb) self.bgpi = value & 0xbf;
         },
         0xff69 => {
-            if (self.model == .cgb) {
+            if (self.model == .cgb and self.cpuCanAccessVram()) {
                 self.bg_palette[self.bgpi & 0x3f] = value;
                 if ((self.bgpi & 0x80) != 0) self.bgpi = 0x80 | ((self.bgpi + 1) & 0x3f);
             }
@@ -183,7 +183,7 @@ pub fn writeRegister(self: *Ppu, address: u16, value: u8, interrupt_flags: *u8) 
             if (self.model == .cgb) self.obpi = value & 0xbf;
         },
         0xff6b => {
-            if (self.model == .cgb) {
+            if (self.model == .cgb and self.cpuCanAccessVram()) {
                 self.obj_palette[self.obpi & 0x3f] = value;
                 if ((self.obpi & 0x80) != 0) self.obpi = 0x80 | ((self.obpi + 1) & 0x3f);
             }
@@ -339,4 +339,52 @@ test "CGB palette data converts to RGB" {
     ppu.bg_palette[0] = 0x1f;
     ppu.bg_palette[1] = 0;
     try std.testing.expectEqual(@as(u32, 0xff0000), ppu.backgroundColor(0, 0));
+}
+
+test "CGB palette register access rules and auto-increment quirks" {
+    var ppu = Ppu{ .model = .cgb };
+    var interrupts: u8 = 0;
+
+    // Default: LCD is off (lcdc bit 7 is 0), so CPU can access VRAM / palettes
+    ppu.lcdc = 0;
+    try std.testing.expect(ppu.cpuCanAccessVram());
+
+    // 1. Check index reads have bit 6 masked as 1
+    // Initial value is 0, so read should return 0x40.
+    try std.testing.expectEqual(@as(u8, 0x40), ppu.readRegister(0xff68));
+    try std.testing.expectEqual(@as(u8, 0x40), ppu.readRegister(0xff6a));
+
+    // Write to bgpi setting auto-increment (0x80) and index 5 (and try setting bit 6, which should be ignored)
+    ppu.writeRegister(0xff68, 0xc5, &interrupts); // 0xc5 = 0x80 (auto-increment) | 0x40 (ignored) | 0x05
+    // Reading back should return 0x80 | 0x40 | 0x05 = 0xc5
+    try std.testing.expectEqual(@as(u8, 0xc5), ppu.readRegister(0xff68));
+
+    // Write palette data (should write to index 5 and auto-increment index to 6)
+    ppu.writeRegister(0xff69, 0x5a, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0x5a), ppu.bg_palette[5]);
+    try std.testing.expectEqual(@as(u8, 0xc6), ppu.readRegister(0xff68)); // auto-incremented to 6
+
+    // 2. Mock LCD turned on, Mode 3 (dot >= 80 and dot < 252)
+    ppu.lcdc = 0x80;
+    ppu.ly = 10;
+    ppu.dot = 100; // mode 3
+    try std.testing.expect(!ppu.cpuCanAccessVram());
+
+    // Reads during mode 3 should return 0xff
+    try std.testing.expectEqual(@as(u8, 0xff), ppu.readRegister(0xff69));
+
+    // Writes during mode 3 should be ignored (no write and no auto-increment)
+    ppu.writeRegister(0xff69, 0xa5, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0x5a), ppu.bg_palette[5]); // unmodified
+    try std.testing.expectEqual(@as(u8, 0xc6), ppu.readRegister(0xff68)); // no auto-increment
+
+    // 3. Mock LCD turned on, Mode 1 VBlank (ly >= 144)
+    ppu.ly = 145;
+    try std.testing.expect(ppu.cpuCanAccessVram());
+
+    // Reads and writes during VBlank should work normally
+    try std.testing.expectEqual(@as(u8, 0), ppu.readRegister(0xff69)); // index 6 is unwritten (0)
+    ppu.writeRegister(0xff69, 0x3c, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0x3c), ppu.bg_palette[6]);
+    try std.testing.expectEqual(@as(u8, 0xc7), ppu.readRegister(0xff68)); // auto-incremented to 7
 }
