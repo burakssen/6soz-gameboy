@@ -3,6 +3,7 @@ const lr35902 = @import("lr35902");
 const Cartridge = @import("cartridge.zig");
 const Ppu = @import("ppu.zig");
 const Apu = @import("apu.zig");
+const State = @import("state_io.zig");
 
 const GameBoy = @This();
 
@@ -43,6 +44,8 @@ pub const Error = error{
 } || Cartridge.Error || lr35902.Cpu.Error || std.mem.Allocator.Error;
 
 const max_frame_samples = 4096;
+const state_magic = "6SOZGB01";
+const state_version: u8 = 1;
 
 allocator: std.mem.Allocator,
 cpu: lr35902.Cpu = .{},
@@ -172,13 +175,13 @@ pub fn setSerialLoopback(self: *GameBoy, enabled: bool) void {
 }
 
 pub fn step(self: *GameBoy) Error!StepResult {
-    var bus = lr35902.Bus.init(self);
-    const instruction = try self.cpu.step(&bus, self.interrupt_enable, &self.interrupt_flags);
+    const instruction = try self.cpu.step(self, self.interrupt_enable, &self.interrupt_flags);
 
     if (self.cpu.stopped and self.active_model == .cgb and (self.key1 & 1) != 0) {
         self.double_speed = !self.double_speed;
         self.key1 = (if (self.double_speed) @as(u8, 0x80) else 0) | 0x7e;
         self.cpu.stopped = false;
+        self.dma_stall_cycles += 2050;
     }
 
     const cpu_cycles = @as(u32, instruction.cycles) + self.dma_stall_cycles;
@@ -229,6 +232,143 @@ pub fn saveRam(self: *GameBoy) ?[]const u8 {
 pub fn loadSaveRam(self: *GameBoy, data: []const u8) !void {
     if (self.cartridge) |*cartridge| return cartridge.loadSaveData(data);
     return Error.NoCartridge;
+}
+
+pub fn saveState(self: *const GameBoy, allocator: std.mem.Allocator) ![]u8 {
+    var state = std.Io.Writer.Allocating.init(allocator);
+    defer state.deinit();
+    const writer = &state.writer;
+
+    try writer.writeAll(state_magic);
+    try State.writeValue(writer, state_version);
+    try State.writeValue(writer, @as(u32, @intCast(self.boot_rom.len)));
+    try State.writeValue(writer, State.hashBytes(0x6762426f6f74486a, self.boot_rom));
+    try State.writeValue(writer, self.cpu);
+    try State.writeValue(writer, self.ppu);
+    try State.writeValue(writer, self.apu);
+    try State.writeValue(writer, self.boot_enabled);
+    try State.writeValue(writer, self.requested_model);
+    try State.writeValue(writer, self.active_model);
+    try State.writeValue(writer, self.wram);
+    try State.writeValue(writer, self.hram);
+    try State.writeValue(writer, self.interrupt_enable);
+    try State.writeValue(writer, self.interrupt_flags);
+    try State.writeValue(writer, self.joyp);
+    try State.writeValue(writer, self.input);
+    try State.writeValue(writer, self.divider);
+    try State.writeValue(writer, self.tima);
+    try State.writeValue(writer, self.tma);
+    try State.writeValue(writer, self.tac);
+    try State.writeValue(writer, self.tima_reload_delay);
+    try State.writeValue(writer, self.serial_data);
+    try State.writeValue(writer, self.serial_control);
+    try State.writeValue(writer, self.serial_bits);
+    try State.writeValue(writer, self.serial_cycles);
+    try State.writeValue(writer, self.serial_loopback);
+    try State.writeValue(writer, self.key1);
+    try State.writeValue(writer, self.double_speed);
+    try State.writeValue(writer, self.svbk);
+    try State.writeValue(writer, self.hdma_source);
+    try State.writeValue(writer, self.hdma_destination);
+    try State.writeValue(writer, self.hdma_blocks);
+    try State.writeValue(writer, self.hdma_active);
+    try State.writeValue(writer, self.dma_stall_cycles);
+
+    if (self.cartridge) |*cartridge| {
+        try State.writeValue(writer, true);
+        try cartridge.saveState(writer);
+    } else {
+        try State.writeValue(writer, false);
+    }
+
+    return state.toOwnedSlice();
+}
+
+pub fn loadState(self: *GameBoy, data: []const u8) !void {
+    var state = std.Io.Reader.fixed(data);
+    const reader = &state;
+    try State.expectBytes(reader, state_magic);
+    if ((try State.readValue(reader, u8)) != state_version) return State.Error.UnsupportedStateVersion;
+
+    const boot_len = try State.readValue(reader, u32);
+    const boot_hash = try State.readValue(reader, u64);
+    if (boot_len != self.boot_rom.len) return State.Error.StateKindMismatch;
+    if (boot_hash != State.hashBytes(0x6762426f6f74486a, self.boot_rom)) return State.Error.StateKindMismatch;
+
+    const cpu = try State.readValue(reader, lr35902.Cpu);
+    const ppu = try State.readValue(reader, Ppu);
+    const apu = try State.readValue(reader, Apu);
+    const boot_enabled = try State.readValue(reader, bool);
+    const requested_model = try State.readValue(reader, Model);
+    const active_model = try State.readValue(reader, Model);
+    const wram = try State.readValue(reader, [8][0x1000]u8);
+    const hram = try State.readValue(reader, [0x7f]u8);
+    const interrupt_enable = try State.readValue(reader, u8);
+    const interrupt_flags = try State.readValue(reader, u8);
+    const joyp = try State.readValue(reader, u8);
+    const input = try State.readValue(reader, InputState);
+    const divider = try State.readValue(reader, u16);
+    const tima = try State.readValue(reader, u8);
+    const tma = try State.readValue(reader, u8);
+    const tac = try State.readValue(reader, u8);
+    const tima_reload_delay = try State.readValue(reader, u8);
+    const serial_data = try State.readValue(reader, u8);
+    const serial_control = try State.readValue(reader, u8);
+    const serial_bits = try State.readValue(reader, u4);
+    const serial_cycles = try State.readValue(reader, u16);
+    const serial_loopback = try State.readValue(reader, bool);
+    const key1 = try State.readValue(reader, u8);
+    const double_speed = try State.readValue(reader, bool);
+    const svbk = try State.readValue(reader, u8);
+    const hdma_source = try State.readValue(reader, u16);
+    const hdma_destination = try State.readValue(reader, u16);
+    const hdma_blocks = try State.readValue(reader, u8);
+    const hdma_active = try State.readValue(reader, bool);
+    const dma_stall_cycles = try State.readValue(reader, u32);
+    const has_cartridge = try State.readValue(reader, bool);
+
+    if (has_cartridge) {
+        if (self.cartridge) |*cartridge| {
+            try cartridge.loadState(reader);
+        } else {
+            return Error.NoCartridge;
+        }
+    } else if (self.cartridge != null) {
+        return State.Error.StateKindMismatch;
+    }
+    try State.done(reader);
+
+    self.cpu = cpu;
+    self.ppu = ppu;
+    self.apu = apu;
+    self.boot_enabled = boot_enabled;
+    self.requested_model = requested_model;
+    self.active_model = active_model;
+    self.wram = wram;
+    self.hram = hram;
+    self.interrupt_enable = interrupt_enable;
+    self.interrupt_flags = interrupt_flags;
+    self.joyp = joyp;
+    self.input = input;
+    self.divider = divider;
+    self.tima = tima;
+    self.tma = tma;
+    self.tac = tac;
+    self.tima_reload_delay = tima_reload_delay;
+    self.serial_data = serial_data;
+    self.serial_control = serial_control;
+    self.serial_bits = serial_bits;
+    self.serial_cycles = serial_cycles;
+    self.serial_loopback = serial_loopback;
+    self.key1 = key1;
+    self.double_speed = double_speed;
+    self.svbk = svbk;
+    self.hdma_source = hdma_source;
+    self.hdma_destination = hdma_destination;
+    self.hdma_blocks = hdma_blocks;
+    self.hdma_active = hdma_active;
+    self.dma_stall_cycles = dma_stall_cycles;
+    self.frame_audio_count = 0;
 }
 
 pub fn read(self: *GameBoy, address: u16) u8 {
@@ -593,4 +733,121 @@ test "steps a complete DMG frame with required boot ROM" {
     try std.testing.expect(result.frame_complete);
     try std.testing.expect(result.audio.len > 0);
     try std.testing.expectEqual(@as(usize, width * height), gameboy.framebuffer().len);
+}
+
+test "Game Boy state round trips after frame with device state" {
+    const allocator = std.testing.allocator;
+    const rom = try makeTestRom(allocator, 0xc0);
+    defer allocator.free(rom);
+    var boot = [_]u8{0} ** 0x900;
+
+    var gameboy = GameBoy.init(allocator);
+    defer gameboy.deinit();
+    try gameboy.load(rom);
+    try gameboy.loadBootRom(&boot);
+    try gameboy.reset();
+    _ = try gameboy.stepFrame();
+
+    gameboy.cpu.a = 0x12;
+    gameboy.wram[3][0x100] = 0x34;
+    gameboy.hram[0x10] = 0x56;
+    gameboy.ppu.vram[1][0x20] = 0x78;
+    gameboy.apu.enabled = false;
+    gameboy.boot_enabled = false;
+    gameboy.input = .{ .a = true, .right = true };
+    gameboy.tima = 0x9a;
+    gameboy.tma = 0xbc;
+    gameboy.interrupt_enable = 0x1f;
+    gameboy.svbk = 3;
+
+    const state = try gameboy.saveState(allocator);
+    defer allocator.free(state);
+
+    gameboy.cpu.a = 0;
+    gameboy.wram[3][0x100] = 0;
+    gameboy.hram[0x10] = 0;
+    gameboy.ppu.vram[1][0x20] = 0;
+    gameboy.apu.enabled = true;
+    gameboy.boot_enabled = true;
+    gameboy.input = .{};
+    gameboy.tima = 0;
+    gameboy.tma = 0;
+    gameboy.interrupt_enable = 0;
+    gameboy.svbk = 1;
+
+    try gameboy.loadState(state);
+
+    try std.testing.expectEqual(@as(u8, 0x12), gameboy.cpu.a);
+    try std.testing.expectEqual(@as(u8, 0x34), gameboy.wram[3][0x100]);
+    try std.testing.expectEqual(@as(u8, 0x56), gameboy.hram[0x10]);
+    try std.testing.expectEqual(@as(u8, 0x78), gameboy.ppu.vram[1][0x20]);
+    try std.testing.expect(!gameboy.apu.enabled);
+    try std.testing.expect(!gameboy.boot_enabled);
+    try std.testing.expect(gameboy.input.a);
+    try std.testing.expect(gameboy.input.right);
+    try std.testing.expectEqual(@as(u8, 0x9a), gameboy.tima);
+    try std.testing.expectEqual(@as(u8, 0xbc), gameboy.tma);
+    try std.testing.expectEqual(@as(u8, 0x1f), gameboy.interrupt_enable);
+    try std.testing.expectEqual(@as(u8, 3), gameboy.svbk);
+    try std.testing.expectEqual(@as(usize, 0), gameboy.frame_audio_count);
+}
+
+test "Game Boy state loading rejects malformed payloads and wrong boot ROM" {
+    const allocator = std.testing.allocator;
+    const rom = try makeTestRom(allocator, 0);
+    defer allocator.free(rom);
+    var boot = [_]u8{0} ** 0x100;
+
+    var gameboy = GameBoy.init(allocator);
+    defer gameboy.deinit();
+    try gameboy.load(rom);
+    try gameboy.loadBootRom(&boot);
+    try gameboy.reset();
+
+    const state = try gameboy.saveState(allocator);
+    defer allocator.free(state);
+
+    try std.testing.expectError(State.Error.InvalidState, gameboy.loadState(state[0 .. state.len - 1]));
+
+    const wrong_version = try allocator.dupe(u8, state);
+    defer allocator.free(wrong_version);
+    wrong_version[state_magic.len] = state_version + 1;
+    try std.testing.expectError(State.Error.UnsupportedStateVersion, gameboy.loadState(wrong_version));
+
+    boot[0] = 1;
+    try gameboy.loadBootRom(&boot);
+    try std.testing.expectError(State.Error.StateKindMismatch, gameboy.loadState(state));
+}
+
+test "CGB speed switch toggles speed and stalls CPU" {
+    const allocator = std.testing.allocator;
+    const rom = try makeTestRom(allocator, 0);
+    defer allocator.free(rom);
+    var boot = [_]u8{0} ** 0x900;
+
+    var gameboy = GameBoy.init(allocator);
+    defer gameboy.deinit();
+    try gameboy.load(rom);
+    try gameboy.setModel(.cgb);
+    try gameboy.loadBootRom(&boot);
+    try gameboy.reset();
+
+    try std.testing.expectEqual(Model.cgb, gameboy.active_model);
+    try std.testing.expectEqual(@as(u8, 0x7e), gameboy.read(0xff4d));
+    try std.testing.expect(!gameboy.double_speed);
+
+    // Prepare speed switch
+    gameboy.write(0xff4d, 1);
+    try std.testing.expectEqual(@as(u8, 0x7f), gameboy.read(0xff4d));
+
+    // Mock CPU execution of STOP opcode
+    gameboy.cpu.stopped = true;
+
+    // Step should execute transition
+    const result = try gameboy.step();
+
+    try std.testing.expect(gameboy.double_speed);
+    try std.testing.expect(!gameboy.cpu.stopped);
+    try std.testing.expectEqual(@as(u8, 0xfe), gameboy.read(0xff4d));
+    try std.testing.expect(result.cycles >= 2050);
 }
