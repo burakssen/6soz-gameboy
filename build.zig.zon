@@ -3,7 +3,7 @@
     .version = "0.0.1",
     .dependencies = .{
         .lr35902 = .{
-            .url = "git+https://github.com/burakssen/6soz-lr35902#e00dee545e2dfaa8fd3f0fd1ae3764ce0b75bbdb",
+            .url = "git+https://github.com/burakssen/6soz-lr35902#56730a7b0814bd9f1ff5aa0f554699c747fe4f3d",
             .hash = "_6soz_lr35902-0.0.1--fXWqqNnAAAwyAxuqC3L1_aY2tpAJWGnw9GDctqvvT-B",
         },
     },
