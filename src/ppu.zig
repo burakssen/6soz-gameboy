@@ -33,6 +33,7 @@ dot: u16 = 0,
 window_line: u8 = 0,
 frame_complete: bool = false,
 lcd_off_cycles: u32 = 0,
+stat_irq_line: bool = false,
 
 pub fn reset(self: *Ppu, model: Model) void {
     const vram = self.vram;
@@ -54,6 +55,7 @@ pub fn tick(self: *Ppu, cycles: u32, interrupt_flags: *u8) void {
         self.ly = 0;
         self.dot = 0;
         self.stat = (self.stat & 0xfc) | 0;
+        self.stat_irq_line = false;
         self.lcd_off_cycles += cycles;
         if (self.lcd_off_cycles >= 70224) {
             self.lcd_off_cycles -= 70224;
@@ -73,26 +75,19 @@ pub fn tick(self: *Ppu, cycles: u32, interrupt_flags: *u8) void {
             if (self.ly == 144) {
                 interrupt_flags.* |= 0x01;
                 self.frame_complete = true;
-                if ((self.stat & 0x10) != 0) interrupt_flags.* |= 0x02;
             } else if (self.ly > 153) {
                 self.ly = 0;
                 self.window_line = 0;
             }
-            self.updateCoincidence(interrupt_flags);
+            self.updateCoincidence();
         }
 
         const new_mode = self.mode();
         self.stat = (self.stat & 0xfc) | new_mode;
         if (old_mode != new_mode) {
             if (old_mode == 3 and new_mode == 0 and self.ly < 144) self.renderScanline();
-            const mask: u8 = switch (new_mode) {
-                0 => 0x08,
-                1 => 0x10,
-                2 => 0x20,
-                else => 0,
-            };
-            if (mask != 0 and (self.stat & mask) != 0) interrupt_flags.* |= 0x02;
         }
+        self.updateStatIrq(interrupt_flags);
     }
 }
 
@@ -153,13 +148,17 @@ pub fn writeRegister(self: *Ppu, address: u16, value: u8, interrupt_flags: *u8) 
                 self.stat = (self.stat & 0xfc) | 0;
             }
         },
-        0xff41 => self.stat = (self.stat & 0x07) | (value & 0x78) | 0x80,
+        0xff41 => {
+            self.stat = (self.stat & 0x07) | (value & 0x78) | 0x80;
+            self.updateStatIrq(interrupt_flags);
+        },
         0xff42 => self.scy = value,
         0xff43 => self.scx = value,
         0xff44 => {},
         0xff45 => {
             self.lyc = value;
-            self.updateCoincidence(interrupt_flags);
+            self.updateCoincidence();
+            self.updateStatIrq(interrupt_flags);
         },
         0xff46 => self.dma = value,
         0xff47 => self.bgp = value,
@@ -192,11 +191,27 @@ pub fn writeRegister(self: *Ppu, address: u16, value: u8, interrupt_flags: *u8) 
     }
 }
 
-fn updateCoincidence(self: *Ppu, interrupt_flags: *u8) void {
-    const was_equal = (self.stat & 0x04) != 0;
+fn updateCoincidence(self: *Ppu) void {
     const equal = self.ly == self.lyc;
     if (equal) self.stat |= 0x04 else self.stat &= ~@as(u8, 0x04);
-    if (!was_equal and equal and (self.stat & 0x40) != 0) interrupt_flags.* |= 0x02;
+}
+
+fn statIrqSignal(self: *const Ppu) bool {
+    if ((self.lcdc & 0x80) == 0) return false;
+    if ((self.stat & 0x40) != 0 and (self.stat & 0x04) != 0) return true;
+    const mask: u8 = switch (self.mode()) {
+        0 => 0x08,
+        1 => 0x10,
+        2 => 0x20,
+        else => 0,
+    };
+    return mask != 0 and (self.stat & mask) != 0;
+}
+
+fn updateStatIrq(self: *Ppu, interrupt_flags: *u8) void {
+    const signal = self.statIrqSignal();
+    if (signal and !self.stat_irq_line) interrupt_flags.* |= 0x02;
+    self.stat_irq_line = signal;
 }
 
 fn renderScanline(self: *Ppu) void {
@@ -332,6 +347,44 @@ test "PPU enters vblank and renders a frame" {
     try std.testing.expectEqual(@as(u8, 144), ppu.ly);
     try std.testing.expect((interrupts & 1) != 0);
     try std.testing.expect(ppu.takeFrameComplete());
+}
+
+test "STAT mode interrupt requests on inactive to active edge" {
+    var ppu = Ppu{};
+    var interrupts: u8 = 0;
+
+    ppu.ly = 144;
+    ppu.dot = 0;
+    ppu.stat = (ppu.stat & 0x84) | 1;
+    ppu.writeRegister(0xff41, 0x10, &interrupts);
+    try std.testing.expect((interrupts & 0x02) != 0);
+
+    interrupts = 0;
+    ppu.writeRegister(0xff41, 0x10, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0), interrupts & 0x02);
+}
+
+test "STAT line blocks new sources until all sources clear" {
+    var ppu = Ppu{};
+    var interrupts: u8 = 0;
+
+    ppu.ly = 0;
+    ppu.lyc = 0;
+    ppu.dot = 0;
+    ppu.updateCoincidence();
+    ppu.writeRegister(0xff41, 0x60, &interrupts);
+    try std.testing.expect((interrupts & 0x02) != 0);
+
+    interrupts = 0;
+    ppu.tick(80, &interrupts);
+    ppu.tick(172, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0), interrupts & 0x02);
+
+    ppu.lyc = 1;
+    ppu.updateCoincidence();
+    ppu.updateStatIrq(&interrupts);
+    ppu.tick(1, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0), interrupts & 0x02);
 }
 
 test "CGB palette data converts to RGB" {

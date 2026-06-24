@@ -80,6 +80,7 @@ hdma_destination: u16 = 0x8000,
 hdma_blocks: u8 = 0,
 hdma_active: bool = false,
 dma_stall_cycles: u32 = 0,
+cpu_bus_active: bool = false,
 frame_audio: [max_frame_samples]f32 = [_]f32{0} ** max_frame_samples,
 frame_audio_count: usize = 0,
 
@@ -175,7 +176,12 @@ pub fn setSerialLoopback(self: *GameBoy, enabled: bool) void {
 }
 
 pub fn step(self: *GameBoy) Error!StepResult {
-    const instruction = try self.cpu.step(self, self.interrupt_enable, &self.interrupt_flags);
+    self.cpu_bus_active = true;
+    const instruction = self.cpu.step(self, self.interrupt_enable, &self.interrupt_flags) catch |err| {
+        self.cpu_bus_active = false;
+        return err;
+    };
+    self.cpu_bus_active = false;
 
     if (self.cpu.stopped and self.active_model == .cgb and (self.key1 & 1) != 0) {
         self.double_speed = !self.double_speed;
@@ -429,11 +435,8 @@ pub fn write(self: *GameBoy, address: u16, value: u8) void {
             }
         },
         0xff04 => self.writeDivider(),
-        0xff05 => {
-            self.tima = value;
-            self.tima_reload_delay = 0;
-        },
-        0xff06 => self.tma = value,
+        0xff05 => self.writeTima(value),
+        0xff06 => self.writeTma(value),
         0xff07 => self.writeTac(value),
         0xff0f => self.interrupt_flags = value & 0x1f,
         0xff10...0xff3f => self.apu.write(address, value),
@@ -531,8 +534,8 @@ fn tickTimer(self: *GameBoy, cycles: u32) void {
         const old_signal = self.timerSignal();
         self.divider +%= 1;
         const new_signal = self.timerSignal();
-        if (old_signal and !new_signal) self.incrementTima();
-        if (self.tima_reload_delay > 0) {
+        const overflowed = old_signal and !new_signal and self.incrementTima();
+        if (!overflowed and self.tima_reload_delay > 0) {
             self.tima_reload_delay -= 1;
             if (self.tima_reload_delay == 0) {
                 self.tima = self.tma;
@@ -542,25 +545,54 @@ fn tickTimer(self: *GameBoy, cycles: u32) void {
     }
 }
 
-fn incrementTima(self: *GameBoy) void {
+fn incrementTima(self: *GameBoy) bool {
     if (self.tima == 0xff) {
         self.tima = 0;
         self.tima_reload_delay = 4;
+        return true;
     } else {
         self.tima += 1;
+        return false;
     }
 }
 
 fn writeDivider(self: *GameBoy) void {
     const old_signal = self.timerSignal();
     self.divider = 0;
-    if (old_signal and !self.timerSignal()) self.incrementTima();
+    if (old_signal and !self.timerSignal()) _ = self.incrementTima();
 }
 
 fn writeTac(self: *GameBoy, value: u8) void {
     const old_signal = self.timerSignal();
     self.tac = value & 7;
-    if (old_signal and !self.timerSignal()) self.incrementTima();
+    if (old_signal and !self.timerSignal()) _ = self.incrementTima();
+}
+
+fn writeTima(self: *GameBoy, value: u8) void {
+    if (self.timerReloadCycleAlias()) return;
+    self.tima = value;
+    self.tima_reload_delay = 0;
+}
+
+fn writeTma(self: *GameBoy, value: u8) void {
+    const reload_cycle = self.timerReloadCycleAlias();
+    self.tma = value;
+    if (reload_cycle) self.tima = value;
+}
+
+fn timerReloadCycleAlias(self: *const GameBoy) bool {
+    if (!self.cpu_bus_active) return self.tima_reload_delay == 1;
+    if (self.tima_reload_delay != 0) return self.tima_reload_delay == 1;
+    if ((self.interrupt_flags & 0x04) == 0 or self.tima != self.tma) return false;
+    const bit: u4 = switch (self.tac & 3) {
+        0 => 9,
+        1 => 3,
+        2 => 5,
+        3 => 7,
+        else => unreachable,
+    };
+    const period_mask = (@as(u16, 1) << (bit + 1)) - 1;
+    return (self.divider & period_mask) == 4;
 }
 
 fn tickSerial(self: *GameBoy, cycles: u32) void {
@@ -659,6 +691,77 @@ test "timer overflow reloads modulo and requests interrupt" {
     gameboy.divider = 0x0f;
     gameboy.tickTimer(5);
     try std.testing.expectEqual(@as(u8, 0x42), gameboy.tima);
+    try std.testing.expect((gameboy.interrupt_flags & 0x04) != 0);
+}
+
+test "timer overflow delay starts after overflow cycle" {
+    var gameboy = GameBoy.init(std.testing.allocator);
+    gameboy.tima = 0xff;
+    gameboy.tma = 0x42;
+    gameboy.tac = 0x05;
+    gameboy.divider = 0x0f;
+
+    gameboy.tickTimer(1);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.tima);
+    try std.testing.expectEqual(@as(u8, 4), gameboy.tima_reload_delay);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.interrupt_flags & 0x04);
+
+    gameboy.tickTimer(3);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.tima);
+    try std.testing.expectEqual(@as(u8, 1), gameboy.tima_reload_delay);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.interrupt_flags & 0x04);
+
+    gameboy.tickTimer(1);
+    try std.testing.expectEqual(@as(u8, 0x42), gameboy.tima);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.tima_reload_delay);
+    try std.testing.expect((gameboy.interrupt_flags & 0x04) != 0);
+}
+
+test "TIMA write before reload cancels pending reload" {
+    var gameboy = GameBoy.init(std.testing.allocator);
+    gameboy.tima = 0xff;
+    gameboy.tma = 0x42;
+    gameboy.tac = 0x05;
+    gameboy.divider = 0x0f;
+
+    gameboy.tickTimer(1);
+    gameboy.write(0xff05, 0x99);
+    gameboy.tickTimer(4);
+
+    try std.testing.expectEqual(@as(u8, 0x99), gameboy.tima);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.tima_reload_delay);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.interrupt_flags & 0x04);
+}
+
+test "TIMA write on reload cycle is ignored" {
+    var gameboy = GameBoy.init(std.testing.allocator);
+    gameboy.tima = 0xff;
+    gameboy.tma = 0x42;
+    gameboy.tac = 0x05;
+    gameboy.divider = 0x0f;
+
+    gameboy.tickTimer(4);
+    gameboy.write(0xff05, 0x99);
+    gameboy.tickTimer(1);
+
+    try std.testing.expectEqual(@as(u8, 0x42), gameboy.tima);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.tima_reload_delay);
+    try std.testing.expect((gameboy.interrupt_flags & 0x04) != 0);
+}
+
+test "TMA write on reload cycle updates reloaded TIMA" {
+    var gameboy = GameBoy.init(std.testing.allocator);
+    gameboy.tima = 0xff;
+    gameboy.tma = 0x42;
+    gameboy.tac = 0x05;
+    gameboy.divider = 0x0f;
+
+    gameboy.tickTimer(4);
+    gameboy.write(0xff06, 0x77);
+    gameboy.tickTimer(1);
+
+    try std.testing.expectEqual(@as(u8, 0x77), gameboy.tma);
+    try std.testing.expectEqual(@as(u8, 0x77), gameboy.tima);
     try std.testing.expect((gameboy.interrupt_flags & 0x04) != 0);
 }
 
