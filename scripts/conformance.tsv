@@ -1,0 +1,32 @@
+# action	model	rom_path	note
+# Paths are relative to the 6soz-gameboy repository root after `zig build fetch-tests`.
+# Missing ROM paths are reported as SKIP by the batch runner.
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/bits/reg_f.gb	CPU flag register bits
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/bits/mem_oam.gb	OAM memory bit behavior
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/instr/daa.gb	DAA instruction behavior
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ei_sequence.gb	EI delayed interrupt enable sequencing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ei_timing.gb	EI timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/rapid_di_ei.gb	Rapid DI/EI sequencing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/intr_timing.gb	Interrupt timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/interrupts/ie_push.gb	Interrupt service IE re-read during PC push
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/reti_intr_timing.gb	RETI interrupt timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/halt_ime0_ei.gb	HALT with IME disabled after EI
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/halt_ime1_timing.gb	HALT with IME enabled timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/if_ie_registers.gb	IF/IE register behavior
+skip	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/reti_timing.gb	known failing: needs finer RETI timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/div_write.gb	DIV write timer edge
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/rapid_toggle.gb	Timer rapid TAC toggle
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tim00.gb	Timer 4096 Hz period
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tim01.gb	Timer 262144 Hz period
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tim10.gb	Timer 65536 Hz period
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tim11.gb	Timer 16384 Hz period
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tima_reload.gb	TIMA reload timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tima_write_reloading.gb	TIMA write during reload timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tma_write_reloading.gb	TMA write during reload timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/oam_dma/basic.gb	OAM DMA basic copy
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/oam_dma/reg_read.gb	OAM DMA register read timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/intr_2_0_timing.gb	PPU mode 2 to mode 0 interrupt timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/stat_irq_blocking.gb	STAT IRQ blocking edge behavior
+skip	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/intr_2_mode0_timing.gb	known failing: needs finer mode 2/mode 0 STAT timing
+skip	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/stat_lyc_onoff.gb	known failing: needs finer LYC/STAT enable timing
+skip	cgb	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/vblank_stat_intr-GS.gb	requires CGB/SGB-specific baseline after DMG results stabilize

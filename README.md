@@ -50,3 +50,10 @@ Run a Mooneye-compatible ROM headlessly with:
 ```sh
 zig build test-rom -- path/to/test.gb path/to/boot.bin
 ```
+
+Run the tracked conformance manifest after fetching the pinned ROM collection:
+
+```sh
+zig build fetch-tests
+zig build test-rom -- --manifest scripts/conformance.tsv --boot-rom path/to/dmg_boot.bin --model dmg
+```

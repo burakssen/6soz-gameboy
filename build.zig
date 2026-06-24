@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) void {
     const conformance_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
-        .root_source_file = b.path("src/conformance.zig"),
+        .root_source_file = b.path("scripts/conformance.zig"),
         .imports = &.{
             .{ .name = "gameboy", .module = gameboy_mod },
             .{ .name = "lr35902", .module = lr35902_dep.module("lr35902") },
@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_conformance = b.addRunArtifact(conformance);
     if (b.args) |args| run_conformance.addArgs(args);
-    const conformance_step = b.step("test-rom", "Run one conformance ROM: zig build test-rom -- rom boot_rom");
+    const conformance_step = b.step("test-rom", "Run conformance ROMs: zig build test-rom -- rom boot_rom OR --manifest scripts/conformance.tsv --boot-rom boot_rom");
     conformance_step.dependOn(&run_conformance.step);
 
     const fetch_tests = b.addSystemCommand(&.{ "sh", "scripts/fetch-test-roms.sh" });
