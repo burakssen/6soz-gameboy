@@ -13,7 +13,7 @@ run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/reti_intr
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/halt_ime0_ei.gb	HALT with IME disabled after EI
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/halt_ime1_timing.gb	HALT with IME enabled timing
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/if_ie_registers.gb	IF/IE register behavior
-skip	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/reti_timing.gb	known failing: needs finer RETI timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/reti_timing.gb	RETI timing during OAM DMA
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/div_write.gb	DIV write timer edge
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/rapid_toggle.gb	Timer rapid TAC toggle
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/timer/tim00.gb	Timer 4096 Hz period
@@ -27,6 +27,6 @@ run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/oam_dma/b
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/oam_dma/reg_read.gb	OAM DMA register read timing
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/intr_2_0_timing.gb	PPU mode 2 to mode 0 interrupt timing
 run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/stat_irq_blocking.gb	STAT IRQ blocking edge behavior
-skip	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/intr_2_mode0_timing.gb	known failing: needs finer mode 2/mode 0 STAT timing
-skip	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/stat_lyc_onoff.gb	known failing: needs finer LYC/STAT enable timing
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/intr_2_mode0_timing.gb	PPU mode 2 interrupt timing through HALT
+run	dmg	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/stat_lyc_onoff.gb	LYC/STAT LCD on/off timing
 skip	cgb	test-data/game-boy-test-roms-7.0/mooneye-test-suite/acceptance/ppu/vblank_stat_intr-GS.gb	requires CGB/SGB-specific baseline after DMG results stabilize

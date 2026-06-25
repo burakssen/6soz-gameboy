@@ -194,7 +194,13 @@ fn runOne(io: std.Io, allocator: std.mem.Allocator, rom_path: []const u8, boot_p
     while (cycles < max_cycles) {
         if (gameboy.read(gameboy.cpu.pc) == 0x40) {
             if (registersPass(&gameboy.cpu)) return .pass;
-            if (registersFail(&gameboy.cpu)) return .fail;
+            if (registersFail(&gameboy.cpu)) {
+                std.debug.print(
+                    "FAIL_REGS b={x:0>2} c={x:0>2} d={x:0>2} e={x:0>2} h={x:0>2} l={x:0>2} pc={x:0>4}\n",
+                    .{ gameboy.cpu.b, gameboy.cpu.c, gameboy.cpu.d, gameboy.cpu.e, gameboy.cpu.h, gameboy.cpu.l, gameboy.cpu.pc },
+                );
+                return .fail;
+            }
         }
         const result = try gameboy.step();
         gameboy.frame_audio_count = 0;

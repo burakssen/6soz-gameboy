@@ -45,7 +45,7 @@ pub const Error = error{
 
 const max_frame_samples = 4096;
 const state_magic = "6SOZGB01";
-const state_version: u8 = 1;
+const state_version: u8 = 2;
 
 allocator: std.mem.Allocator,
 cpu: lr35902.Cpu = .{},
@@ -80,9 +80,15 @@ hdma_destination: u16 = 0x8000,
 hdma_blocks: u8 = 0,
 hdma_active: bool = false,
 dma_stall_cycles: u32 = 0,
+oam_dma_active: bool = false,
+oam_dma_source: u16 = 0,
+oam_dma_index: u16 = 0,
+oam_dma_cycle_accum: u8 = 0,
+oam_dma_release_cycles: u8 = 0,
 cpu_bus_active: bool = false,
 frame_audio: [max_frame_samples]f32 = [_]f32{0} ** max_frame_samples,
 frame_audio_count: usize = 0,
+audio_overflow: bool = false,
 
 pub fn init(allocator: std.mem.Allocator) GameBoy {
     return .{ .allocator = allocator };
@@ -161,7 +167,13 @@ pub fn reset(self: *GameBoy) Error!void {
     self.svbk = 1;
     self.hdma_active = false;
     self.dma_stall_cycles = 0;
+    self.oam_dma_active = false;
+    self.oam_dma_source = 0;
+    self.oam_dma_index = 0;
+    self.oam_dma_cycle_accum = 0;
+    self.oam_dma_release_cycles = 0;
     self.frame_audio_count = 0;
+    self.audio_overflow = false;
 }
 
 pub fn setInput(self: *GameBoy, input: InputState) void {
@@ -176,6 +188,7 @@ pub fn setSerialLoopback(self: *GameBoy, enabled: bool) void {
 }
 
 pub fn step(self: *GameBoy) Error!StepResult {
+    const audio_start = self.frame_audio_count;
     self.cpu_bus_active = true;
     const instruction = self.cpu.step(self, self.interrupt_enable, &self.interrupt_flags) catch |err| {
         self.cpu_bus_active = false;
@@ -190,28 +203,44 @@ pub fn step(self: *GameBoy) Error!StepResult {
         self.dma_stall_cycles += 2050;
     }
 
-    const cpu_cycles = @as(u32, instruction.cycles) + self.dma_stall_cycles;
-    self.dma_stall_cycles = 0;
+    const stall_cycles = self.dma_stall_cycles;
+    if (stall_cycles != 0) {
+        self.dma_stall_cycles = 0;
+        self.tick(stall_cycles);
+    }
+    if (self.audio_overflow) {
+        self.audio_overflow = false;
+        return Error.AudioBufferOverflow;
+    }
+    const cpu_cycles = @as(u32, instruction.cycles) + stall_cycles;
+    const frame_complete = self.ppu.takeFrameComplete();
+
+    return .{
+        .cycles = cpu_cycles,
+        .audio = self.frame_audio[audio_start..self.frame_audio_count],
+        .frame_complete = frame_complete,
+    };
+}
+
+pub fn tick(self: *GameBoy, cpu_cycles: u32) void {
     self.tickTimer(cpu_cycles);
     self.tickSerial(cpu_cycles);
     if (self.cartridge) |*cartridge| cartridge.tick(cpu_cycles);
+    self.tickOamDma(cpu_cycles);
 
     const device_cycles: u32 = if (self.double_speed) @max(1, cpu_cycles / 2) else cpu_cycles;
     self.ppu.tick(device_cycles, &self.interrupt_flags);
     if (self.hdma_active and self.ppu.mode() == 0) self.transferHdmaBlock();
     const audio = self.apu.tick(device_cycles);
-    try self.appendAudio(audio);
-    const frame_complete = self.ppu.takeFrameComplete();
-
-    return .{
-        .cycles = cpu_cycles,
-        .audio = audio,
-        .frame_complete = frame_complete,
+    self.appendAudio(audio) catch |err| switch (err) {
+        Error.AudioBufferOverflow => self.audio_overflow = true,
+        else => unreachable,
     };
 }
 
 pub fn stepFrame(self: *GameBoy) Error!StepResult {
     self.frame_audio_count = 0;
+    self.audio_overflow = false;
     var cycles: u32 = 0;
     while (true) {
         const result = try self.step();
@@ -279,6 +308,11 @@ pub fn saveState(self: *const GameBoy, allocator: std.mem.Allocator) ![]u8 {
     try State.writeValue(writer, self.hdma_blocks);
     try State.writeValue(writer, self.hdma_active);
     try State.writeValue(writer, self.dma_stall_cycles);
+    try State.writeValue(writer, self.oam_dma_active);
+    try State.writeValue(writer, self.oam_dma_source);
+    try State.writeValue(writer, self.oam_dma_index);
+    try State.writeValue(writer, self.oam_dma_cycle_accum);
+    try State.writeValue(writer, self.oam_dma_release_cycles);
 
     if (self.cartridge) |*cartridge| {
         try State.writeValue(writer, true);
@@ -331,6 +365,11 @@ pub fn loadState(self: *GameBoy, data: []const u8) !void {
     const hdma_blocks = try State.readValue(reader, u8);
     const hdma_active = try State.readValue(reader, bool);
     const dma_stall_cycles = try State.readValue(reader, u32);
+    const oam_dma_active = try State.readValue(reader, bool);
+    const oam_dma_source = try State.readValue(reader, u16);
+    const oam_dma_index = try State.readValue(reader, u16);
+    const oam_dma_cycle_accum = try State.readValue(reader, u8);
+    const oam_dma_release_cycles = try State.readValue(reader, u8);
     const has_cartridge = try State.readValue(reader, bool);
 
     if (has_cartridge) {
@@ -374,10 +413,21 @@ pub fn loadState(self: *GameBoy, data: []const u8) !void {
     self.hdma_blocks = hdma_blocks;
     self.hdma_active = hdma_active;
     self.dma_stall_cycles = dma_stall_cycles;
+    self.oam_dma_active = oam_dma_active;
+    self.oam_dma_source = oam_dma_source;
+    self.oam_dma_index = oam_dma_index;
+    self.oam_dma_cycle_accum = oam_dma_cycle_accum;
+    self.oam_dma_release_cycles = oam_dma_release_cycles;
     self.frame_audio_count = 0;
+    self.audio_overflow = false;
 }
 
 pub fn read(self: *GameBoy, address: u16) u8 {
+    if (self.cpu_bus_active and self.oam_dma_active and !self.cpuCanAccessDuringOamDma(address)) return 0xff;
+    return self.readRaw(address);
+}
+
+fn readRaw(self: *GameBoy, address: u16) u8 {
     if (self.boot_enabled and self.bootMapped(address)) return self.boot_rom[address];
     return switch (address) {
         0x0000...0x7fff, 0xa000...0xbfff => if (self.cartridge) |*cartridge| cartridge.read(address) else 0xff,
@@ -412,6 +462,11 @@ pub fn read(self: *GameBoy, address: u16) u8 {
 }
 
 pub fn write(self: *GameBoy, address: u16, value: u8) void {
+    if (self.cpu_bus_active and self.oam_dma_active and !self.cpuCanAccessDuringOamDma(address)) return;
+    self.writeRaw(address, value);
+}
+
+fn writeRaw(self: *GameBoy, address: u16, value: u8) void {
     switch (address) {
         0x0000...0x7fff, 0xa000...0xbfff => if (self.cartridge) |*cartridge| cartridge.write(address, value),
         0x8000...0x9fff => {
@@ -442,7 +497,7 @@ pub fn write(self: *GameBoy, address: u16, value: u8) void {
         0xff10...0xff3f => self.apu.write(address, value),
         0xff40...0xff4b, 0xff4f, 0xff68...0xff6b => {
             self.ppu.writeRegister(address, value, &self.interrupt_flags);
-            if (address == 0xff46) self.oamDma(value);
+            if (address == 0xff46) self.startOamDma(value);
         },
         0xff4d => {
             if (self.active_model == .cgb) self.key1 = (self.key1 & 0x80) | 0x7e | (value & 1);
@@ -611,11 +666,59 @@ fn tickSerial(self: *GameBoy, cycles: u32) void {
     }
 }
 
-fn oamDma(self: *GameBoy, page: u8) void {
-    const source = @as(u16, page) << 8;
-    var offset: u16 = 0;
-    while (offset < 160) : (offset += 1) self.ppu.oam[offset] = self.read(source + offset);
-    self.dma_stall_cycles += 640;
+fn cpuCanAccessDuringOamDma(self: *const GameBoy, address: u16) bool {
+    if (address >= 0xff80 and address <= 0xfffe) return true;
+    if (address >= 0xfe00 and address <= 0xfe9f) return false;
+
+    const source = self.oam_dma_source;
+    if (source < 0x8000) return address >= 0x8000;
+    if (source < 0xa000) return address < 0x8000 or address >= 0xa000;
+    if (source < 0xc000) return address < 0xa000 or address >= 0xc000;
+    if (source < 0xfe00) return address < 0xc000 or address >= 0xfe00;
+    return true;
+}
+
+fn startOamDma(self: *GameBoy, page: u8) void {
+    self.oam_dma_active = true;
+    self.oam_dma_source = @as(u16, page) << 8;
+    self.oam_dma_index = 0;
+    self.oam_dma_cycle_accum = 0;
+    self.oam_dma_release_cycles = 0;
+}
+
+fn tickOamDma(self: *GameBoy, cycles: u32) void {
+    if (!self.oam_dma_active) return;
+    if (self.oam_dma_index >= 160) {
+        const consumed = @min(cycles, self.oam_dma_release_cycles);
+        self.oam_dma_release_cycles -= @intCast(consumed);
+        if (self.oam_dma_release_cycles == 0) self.oam_dma_active = false;
+        return;
+    }
+    self.oam_dma_cycle_accum += @truncate(cycles % 4);
+    var transfers: u32 = cycles / 4;
+    if (self.oam_dma_cycle_accum >= 4) {
+        self.oam_dma_cycle_accum -= 4;
+        transfers += 1;
+    }
+    while (transfers > 0 and self.oam_dma_index < 160) : (transfers -= 1) {
+        self.ppu.oam[@intCast(self.oam_dma_index)] = self.readOamDmaSource(self.oam_dma_source + self.oam_dma_index);
+        self.oam_dma_index += 1;
+    }
+    if (self.oam_dma_index >= 160) self.oam_dma_release_cycles = 8;
+}
+
+fn readOamDmaSource(self: *GameBoy, address: u16) u8 {
+    return switch (address) {
+        0x0000...0x7fff, 0xa000...0xbfff => if (self.cartridge) |*cartridge| cartridge.read(address) else 0xff,
+        0x8000...0x9fff => self.ppu.vram[self.ppu.vbk][address - 0x8000],
+        0xc000...0xcfff => self.wram[0][address - 0xc000],
+        0xd000...0xdfff => self.wram[self.activeWramBank()][address - 0xd000],
+        0xe000...0xefff => self.wram[0][address - 0xe000],
+        0xf000...0xfdff => self.wram[self.activeWramBank()][address - 0xf000],
+        0xfe00...0xfe9f => self.ppu.oam[address - 0xfe00],
+        0xff80...0xfffe => self.hram[address - 0xff80],
+        else => 0xff,
+    };
 }
 
 fn startHdma(self: *GameBoy, value: u8) void {
@@ -800,14 +903,28 @@ test "failed cartridge replacement preserves the loaded cartridge" {
     try std.testing.expectEqual(@as(u8, 0), gameboy.read(0));
 }
 
-test "OAM DMA records its CPU stall" {
+test "OAM DMA progresses one byte per machine cycle and blocks non-HRAM CPU access" {
     var gameboy = GameBoy.init(std.testing.allocator);
     gameboy.wram[0][0] = 0x5a;
+    gameboy.wram[0][1] = 0xa5;
+    gameboy.hram[0] = 0x77;
 
-    gameboy.oamDma(0xc0);
+    gameboy.startOamDma(0xc0);
+    try std.testing.expect(gameboy.oam_dma_active);
+    gameboy.cpu_bus_active = true;
+    try std.testing.expectEqual(@as(u8, 0xff), gameboy.read(0xc000));
+    try std.testing.expectEqual(@as(u8, 0x77), gameboy.read(0xff80));
 
+    gameboy.tick(4);
     try std.testing.expectEqual(@as(u8, 0x5a), gameboy.ppu.oam[0]);
-    try std.testing.expectEqual(@as(u32, 640), gameboy.dma_stall_cycles);
+    try std.testing.expectEqual(@as(u8, 0), gameboy.ppu.oam[1]);
+    gameboy.tick(4);
+    try std.testing.expectEqual(@as(u8, 0xa5), gameboy.ppu.oam[1]);
+
+    gameboy.tick(632);
+    try std.testing.expect(gameboy.oam_dma_active);
+    gameboy.tick(8);
+    try std.testing.expect(!gameboy.oam_dma_active);
 }
 
 test "frame audio overflow is reported" {
@@ -818,6 +935,15 @@ test "frame audio overflow is reported" {
         Error.AudioBufferOverflow,
         gameboy.appendAudio(&[_]f32{0}),
     );
+}
+
+test "device tick records frame audio overflow" {
+    var gameboy = GameBoy.init(std.testing.allocator);
+    gameboy.frame_audio_count = gameboy.frame_audio.len;
+
+    gameboy.tick(88);
+
+    try std.testing.expect(gameboy.audio_overflow);
 }
 
 test "steps a complete DMG frame with required boot ROM" {

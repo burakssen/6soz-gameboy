@@ -33,6 +33,7 @@ dot: u16 = 0,
 window_line: u8 = 0,
 frame_complete: bool = false,
 lcd_off_cycles: u32 = 0,
+lcd_enable_delay_cycles: u32 = 0,
 stat_irq_line: bool = false,
 
 pub fn reset(self: *Ppu, model: Model) void {
@@ -67,6 +68,13 @@ pub fn tick(self: *Ppu, cycles: u32, interrupt_flags: *u8) void {
 
     var remaining = cycles;
     while (remaining > 0) : (remaining -= 1) {
+        if (self.lcd_enable_delay_cycles > 0) {
+            self.lcd_enable_delay_cycles -= 1;
+            self.stat = (self.stat & 0xfc) | 0;
+            self.updateStatIrq(interrupt_flags);
+            continue;
+        }
+
         const old_mode = self.mode();
         self.dot += 1;
         if (self.dot >= 456) {
@@ -141,11 +149,20 @@ pub fn writeRegister(self: *Ppu, address: u16, value: u8, interrupt_flags: *u8) 
         0xff40 => {
             const was_enabled = (self.lcdc & 0x80) != 0;
             self.lcdc = value;
-            if (was_enabled and (value & 0x80) == 0) {
+            const is_enabled = (value & 0x80) != 0;
+            if (was_enabled and !is_enabled) {
                 self.ly = 0;
                 self.dot = 0;
                 self.window_line = 0;
                 self.stat = (self.stat & 0xfc) | 0;
+            } else if (!was_enabled and is_enabled) {
+                const old_signal = self.statIrqSourceSignal();
+                self.dot = 0;
+                self.lcd_enable_delay_cycles = 80;
+                self.updateCoincidence();
+                const new_signal = self.statIrqSourceSignal();
+                if (new_signal and !old_signal) interrupt_flags.* |= 0x02;
+                self.stat_irq_line = new_signal;
             }
         },
         0xff41 => {
@@ -157,8 +174,10 @@ pub fn writeRegister(self: *Ppu, address: u16, value: u8, interrupt_flags: *u8) 
         0xff44 => {},
         0xff45 => {
             self.lyc = value;
-            self.updateCoincidence();
-            self.updateStatIrq(interrupt_flags);
+            if ((self.lcdc & 0x80) != 0) {
+                self.updateCoincidence();
+                self.updateStatIrq(interrupt_flags);
+            }
         },
         0xff46 => self.dma = value,
         0xff47 => self.bgp = value,
@@ -198,8 +217,13 @@ fn updateCoincidence(self: *Ppu) void {
 
 fn statIrqSignal(self: *const Ppu) bool {
     if ((self.lcdc & 0x80) == 0) return false;
+    return self.statIrqSourceSignal();
+}
+
+fn statIrqSourceSignal(self: *const Ppu) bool {
     if ((self.stat & 0x40) != 0 and (self.stat & 0x04) != 0) return true;
-    const mask: u8 = switch (self.mode()) {
+    const visible_mode: u2 = @truncate(self.stat & 0x03);
+    const mask: u8 = switch (visible_mode) {
         0 => 0x08,
         1 => 0x10,
         2 => 0x20,
@@ -385,6 +409,40 @@ test "STAT line blocks new sources until all sources clear" {
     ppu.updateStatIrq(&interrupts);
     ppu.tick(1, &interrupts);
     try std.testing.expectEqual(@as(u8, 0), interrupts & 0x02);
+}
+
+test "LCD-off LYC writes keep visible coincidence state" {
+    var ppu = Ppu{};
+    var interrupts: u8 = 0;
+
+    ppu.writeRegister(0xff40, 0, &interrupts);
+    ppu.writeRegister(0xff45, 0x90, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0x84), ppu.readRegister(0xff41) & 0x84);
+
+    ppu.writeRegister(0xff45, 1, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0x84), ppu.readRegister(0xff41) & 0x84);
+    try std.testing.expectEqual(@as(u8, 0), interrupts & 0x02);
+}
+
+test "LCD enable exposes startup mode and only requests new LYC edge" {
+    var ppu = Ppu{};
+    var interrupts: u8 = 0;
+
+    ppu.writeRegister(0xff40, 0, &interrupts);
+    ppu.stat = 0xc4;
+    ppu.writeRegister(0xff45, 0, &interrupts);
+    ppu.writeRegister(0xff40, 0x80, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0xc4), ppu.readRegister(0xff41));
+    try std.testing.expectEqual(@as(u8, 0), interrupts & 0x02);
+
+    ppu = .{};
+    interrupts = 0;
+    ppu.writeRegister(0xff40, 0, &interrupts);
+    ppu.stat = 0xc0;
+    ppu.writeRegister(0xff45, 0, &interrupts);
+    ppu.writeRegister(0xff40, 0x80, &interrupts);
+    try std.testing.expectEqual(@as(u8, 0xc4), ppu.readRegister(0xff41));
+    try std.testing.expectEqual(@as(u8, 0x02), interrupts & 0x02);
 }
 
 test "CGB palette data converts to RGB" {
